@@ -160,29 +160,45 @@ def fetch(url, session, max_retries=MAX_RETRIES):
 
 
 def extract_numero(title: str, url: str = "") -> str | None:
-    """Normaliza el número de una DDU a partir del título o, si falla, del nombre de archivo."""
+    """Normaliza el número de una DDU a partir del título o, si falla, del nombre de archivo.
+
+    IMPORTANTE: los patrones se anclan al INICIO del título (con re.match, no re.search).
+    Muchos títulos de DDU generales mencionan más adelante otra circular relacionada
+    (ej. "DDU 430 ... Deja sin efecto ... DDU-ESPECÍFICA 29/2007") — si se buscara la
+    referencia ESP en cualquier parte del texto, se confundiría el número propio del
+    documento con el de la circular citada.
+
+    Si el título es explícitamente un PDF de índice ("Índice Circulares... hasta la
+    DDU NNN"), se rechaza de inmediato sin probar el fallback de nombre de archivo:
+    algunos índices están alojados bajo una URL con nombre de archivo idéntico al de
+    un circular individual real (ej. "DDU-422.pdf"), y el fallback los capturaría
+    igual si no se corta acá primero.
+    """
+    if re.match(r'\s*[IÍ]ndice\b', html.unescape(title or ""), re.IGNORECASE):
+        return None
+
     for candidate in (title, os.path.basename(url)):
         if not candidate:
             continue
         t = html.unescape(candidate)
 
         # DDU específica: "DDU-ESP 001-07", "DDU-ESPECÍFICA N°16/2008", "DDU ESP 006-08"
-        m = re.search(
-            r'DDU[\s\-]?ESP(?:EC[IÍ]FICA)?\.?\s*N?[°ºo]?\.?\s*[:\-]?\s*(\d{1,4})\s*[\/\-]\s*(\d{2,4})',
+        m = re.match(
+            r'\s*DDU[\s\-]?ESP(?:EC[IÍ]FICA)?\.?\s*N?[°ºo]?\.?\s*[:\-]?\s*(\d{1,4})\s*[\/\-]\s*(\d{2,4})',
             t, re.IGNORECASE,
         )
         if m:
             return f"DDU-ESP-{m.group(1).zfill(3)}-{m.group(2)}"
 
-        m = re.search(
-            r'DDU[\s\-]?ESP(?:EC[IÍ]FICA)?\.?\s*N?[°ºo]?\.?\s*[:\-]?\s*(\d{1,4})',
+        m = re.match(
+            r'\s*DDU[\s\-]?ESP(?:EC[IÍ]FICA)?\.?\s*N?[°ºo]?\.?\s*[:\-]?\s*(\d{1,4})',
             t, re.IGNORECASE,
         )
         if m:
             return f"DDU-ESP-{m.group(1).zfill(3)}"
 
         # DDU general: "DDU 546", "DDU-149" (con espacio o guion)
-        m = re.search(r'\bDDU[\s\-]+(\d{1,4})\b', t, re.IGNORECASE)
+        m = re.match(r'\s*DDU[\s\-]+(\d{1,4})\b', t, re.IGNORECASE)
         if m:
             return f"DDU-{m.group(1)}"
 
@@ -309,7 +325,7 @@ def extract_text_ocr(pdf_path: Path) -> str:
         raise RuntimeError("pdf2image/pytesseract no están instalados")
     kwargs = {"poppler_path": POPPLER_PATH} if POPPLER_PATH else {}
     images = convert_from_path(str(pdf_path), dpi=200, **kwargs)
-    tess_config = f'--tessdata-dir "{TESSDATA_DIR}"' if Path(TESSDATA_DIR).exists() else ""
+    tess_config = f"--tessdata-dir {TESSDATA_DIR}" if Path(TESSDATA_DIR).exists() else ""
     texts = []
     for i, img in enumerate(images, start=1):
         try:
@@ -580,18 +596,24 @@ def main():
 
     to_process = {n: entries[n] for n in pending}
 
-    for numero, entry in to_process.items():
+    # Entradas OK acumuladas en esta corrida, para poder recalcular relaciones/estado
+    # con el contexto visto hasta el momento en cada iteración (no solo al final).
+    ok_entries: dict[str, DDUEntry] = {}
+
+    for i, (numero, entry) in enumerate(to_process.items(), start=1):
         logger.info("--- Procesando %s ---", numero)
         try:
             ok = download_pdf(entry, session)
             if not ok:
                 stats["fallidas"] += 1
                 processed[numero] = {"status": "download_failed", "pdf_url": entry.pdf_url}
+                save_state(state)
                 continue
 
             if not extract_text(entry):
                 stats["fallidas"] += 1
                 processed[numero] = {"status": "text_extraction_failed", "pdf_url": entry.pdf_url}
+                save_state(state)
                 continue
 
             if entry.ocr_used:
@@ -599,27 +621,28 @@ def main():
 
             parse_normativo(entry)
             stats["descargadas_ok"] += 1
-            # se guarda temporalmente; estado final y escritura de .md ocurre tras compute_estados
+
+            # Escritura inmediata: si el proceso se corta, no se pierde el trabajo ya hecho.
+            # compute_estados solo ve lo procesado hasta ahora en esta corrida (limitación
+            # conocida, documentada en el README).
+            ok_entries[numero] = entry
+            compute_estados(ok_entries)
+            dest = write_markdown(entry, output_dir)
+            processed[numero] = {
+                "status": "ok",
+                "pdf_url": entry.pdf_url,
+                "md_path": str(dest),
+                "ocr_used": entry.ocr_used,
+            }
+            logger.info("Escrito %s", dest)
         except Exception as exc:
             logger.exception("Error inesperado procesando %s: %s", numero, exc)
             stats["fallidas"] += 1
             processed[numero] = {"status": "error", "detail": str(exc)}
 
-    # Para calcular relaciones/estado con contexto completo, se recalculan sobre
-    # todas las entradas ya procesadas en esta corrida (las de corridas previas
-    # ya tienen su .md escrito y no se reabren, salvo --force).
-    ok_entries = {n: e for n, e in to_process.items() if e.texto and e.texto.strip()}
-    compute_estados(ok_entries)
-
-    for numero, entry in ok_entries.items():
-        dest = write_markdown(entry, output_dir)
-        processed[numero] = {
-            "status": "ok",
-            "pdf_url": entry.pdf_url,
-            "md_path": str(dest),
-            "ocr_used": entry.ocr_used,
-        }
-        logger.info("Escrito %s", dest)
+        state["processed"] = processed
+        if i % 5 == 0 or i == len(to_process):
+            save_state(state)
 
     state["processed"] = processed
     save_state(state)
