@@ -3,6 +3,12 @@ ddu_raw/
 tessdata/
 state.json
 *.log
+*.out
+
+dictamenes_raw/
+normativa_raw/
+state_dictamenes.json
+state_normativa.json
 
 # Python
 __pycache__/

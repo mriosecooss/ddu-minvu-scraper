@@ -3,6 +3,10 @@
 Descarga, indexa y convierte a Markdown todas las Circulares DDU (Generales y
 Específicas) del MINVU, para consulta en un vault de Obsidian.
 
+Además incluye dos scripts complementarios que descargan e indexan, en el
+mismo formato Markdown + frontmatter, dictámenes de Contraloría y normativa
+de construcción/urbanismo adicional (LGUC, OGUC, PRC, formularios, etc.).
+
 ## Resultado de la exploración inicial (paso 1, `--scrape-only`)
 
 - **544 DDU únicas** encontradas y deduplicadas (347 Generales + 197 Específicas).
@@ -102,3 +106,47 @@ pdf_original: "https://www.minvu.gob.cl/wp-content/uploads/..."
   (por partes), una DDU antigua no se re-evalúa automáticamente cuando una
   DDU nueva la deroga en una corrida posterior — usa `--force` periódicamente
   para recalcular todos los estados con el corpus completo.
+
+## Scripts complementarios
+
+Ambos scripts leen el origen de los datos desde variables de entorno (no
+hay un origen fijado en el código); hay que configurarlas antes de correr:
+
+```powershell
+$env:SOURCE_BUCKET = "..."
+$env:SOURCE_PREFIX = "..."       # solo dictamenes_scraper.py
+$env:SOURCE_ROOT_PREFIX = "..."  # solo normativa_scraper.py
+```
+
+### `dictamenes_scraper.py` — Dictámenes de Contraloría
+
+Genera un `.md` por dictamen con frontmatter: `numero, fecha, caracter,
+identificador, materia, criterio, destinatarios, origen, descriptores,
+fuentes_legales, caracter_procesal, aplica_dictamenes, fuente_url` + texto
+completo.
+
+```powershell
+py dictamenes_scraper.py --scrape-only   # solo lista y cuenta
+py dictamenes_scraper.py                 # corrida incremental
+py dictamenes_scraper.py --force         # reprocesa todo
+```
+
+Salida: `03 Dictamenes Contraloria/Dictamen-{numero}.md`.
+Estado incremental: `state_dictamenes.json`.
+
+### `normativa_scraper.py` — Normativa complementaria
+
+Descarga PDFs de normativa de construcción/urbanismo (LGUC, OGUC, PRC,
+PRMS, PRS, Copropiedad, Formularios Únicos Nacionales, normativa local y
+vinculada), extrae texto (pypdf + fallback OCR, reutiliza la configuración
+de Tesseract/Poppler de `ddu_scraper.py`) y genera un `.md` por documento
+con frontmatter: `categoria, titulo, nombre_archivo, fuente_url, ocr_used`.
+
+```powershell
+py normativa_scraper.py --scrape-only
+py normativa_scraper.py
+py normativa_scraper.py --force
+```
+
+Salida: `04 Normativa Vinculada/{categoria}/[{subcarpeta}/]{titulo}.md`.
+Estado incremental: `state_normativa.json`.
