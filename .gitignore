@@ -1,0 +1,11 @@
+# Datos descargados y generados (no van al repo)
+ddu_raw/
+tessdata/
+state.json
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
